@@ -1,0 +1,168 @@
+version: "3.8"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MERGED COMPOSE — OpenWebUI + HyDE-RAG Pipeline
+#
+# HOW TO USE:
+#   1. Copy this file anywhere on your host — no other project files needed.
+#   2. Create a .env file next to it (see .env.example in the repo) and set your
+#      preferred models / ports.
+#   3. Run:  docker compose up -d
+#      Docker will pull all images and build the custom services directly from
+#      the GitHub repo automatically.
+#   4. Pull models once containers are up:
+#      docker exec ollama ollama pull llama3
+#      docker exec ollama ollama pull nomic-embed-text
+#
+# ⚠ IF OLLAMA IS ALREADY RUNNING IN A SEPARATE COMPOSE:
+#   Remove the entire `ollama` service block below and change every
+#   OLLAMA_BASE_URL value to point at your existing container, e.g.:
+#     OLLAMA_BASE_URL=http://<your-ollama-container-name>:11434
+#   Then add `network_mode: host` to that container, or connect both
+#   compose projects to the same external network (see network note at bottom).
+# ═══════════════════════════════════════════════════════════════════════════════
+
+services:
+
+  # ─────────────────────────────────────────────────────────
+  # 1. Ollama – local LLM inference + embeddings
+  #    ↑ REMOVE THIS BLOCK if Ollama is already running
+  # ─────────────────────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - /docker/ollama:/root/.ollama
+    environment:
+      - OLLAMA_KEEP_ALIVE=2m
+      - OLLAMA_NUM_PARALLEL=2     # Allows Chat LLM and Embedding model to load simultaneously
+      - OLLAMA_MAX_QUEUE=10       # Queues requests instead of returning a 503
+      - OLLAMA_NUM_THREADS=4
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 8G
+        reservations:
+          memory: 3G
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    networks:
+      - ai-net
+
+  # ─────────────────────────────────────────────────────────
+  # 2. Open WebUI – frontend & query interface
+  # ─────────────────────────────────────────────────────────
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:latest
+    container_name: open-webui
+    restart: unless-stopped
+    ports:
+      - "3000:8080"
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - CHAT_STREAM_RESPONSE_CHUNK_MAX_BUFFER_SIZE=20971520
+      - GLOBAL_LOG_LEVEL=DEBUG
+    volumes:
+      - /docker/open-webui-data:/app/backend/data
+    depends_on:
+      - ollama
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    networks:
+      - ai-net
+
+  # ─────────────────────────────────────────────────────────
+  # 3. ChromaDB – vector store
+  # ─────────────────────────────────────────────────────────
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: chromadb
+    restart: unless-stopped
+    ports:
+      - "${CHROMADB_PORT:-8080}:8000"
+    volumes:
+      - chromadb_data:/chroma/chroma
+    environment:
+      - ANONYMIZED_TELEMETRY=false
+      - ALLOW_RESET=true
+    networks:
+      - ai-net
+
+  # ─────────────────────────────────────────────────────────
+  # 4. Orchestration API – FastAPI HyDE brain
+  #    Built directly from GitHub — no local files required
+  # ─────────────────────────────────────────────────────────
+  orchestration:
+    build:
+      context: https://github.com/Tanenthor/HyDE-RAG-Pipeline.git#main:orchestration
+    container_name: orchestration
+    restart: unless-stopped
+    ports:
+      - "${ORCHESTRATION_PORT:-8000}:8000"
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - CHROMADB_HOST=chromadb
+      - CHROMADB_PORT=8000
+      - GENERATION_MODEL=${GENERATION_MODEL:-llama3}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-nomic-embed-text}
+      - CHROMA_COLLECTION=${CHROMA_COLLECTION:-handbooks}
+      - HyDE_NUM_RESULTS=${HYDE_NUM_RESULTS:-5}
+    depends_on:
+      - ollama
+      - chromadb
+    networks:
+      - ai-net
+
+  # ─────────────────────────────────────────────────────────
+  # 5. Ingestion UI – Streamlit portal
+  #    Built directly from GitHub — no local files required
+  # ─────────────────────────────────────────────────────────
+  ingestion-ui:
+    build:
+      context: https://github.com/Tanenthor/HyDE-RAG-Pipeline.git#main:ingestion-ui
+    container_name: ingestion-ui
+    restart: unless-stopped
+    ports:
+      - "${INGESTION_UI_PORT:-8501}:8501"
+    environment:
+      - ORCHESTRATION_URL=http://orchestration:8000
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - GENERATION_MODEL=${GENERATION_MODEL:-llama3}
+    depends_on:
+      - orchestration
+      - ollama
+    networks:
+      - ai-net
+
+# ─────────────────────────────────────────────────────────
+# Single shared network — all containers talk by service name
+#
+# If your existing Ollama/OpenWebUI stack runs in a SEPARATE
+# compose project and you do not want to merge the files, make
+# that network external here instead:
+#
+#   networks:
+#     ai-net:
+#       external: true
+#       name: <your-existing-network-name>
+#
+# Find your existing network name with: docker network ls
+# ─────────────────────────────────────────────────────────
+networks:
+  ai-net:
+    driver: bridge
+
+volumes:
+  chromadb_data:
