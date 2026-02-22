@@ -39,21 +39,22 @@ Exposes an API endpoint that OpenWebUI connects to (mimicking an OpenAI endpoint
 
 2. **Pull and Start Services:**
    ```bash
-   docker-compose up -d```
+   docker-compose up -d
+   ```
 
 3. **Initialize Models in Ollama:**
-Exec into the Ollama container and pull your preferred models for generation and embedding.
-```bash
-docker exec -it ollama ollama run llama3
-docker exec -it ollama ollama pull nomic-embed-text```
-
+   Exec into the Ollama container and pull your preferred models for generation and embedding.
+   ```bash
+   docker exec -it ollama ollama run llama3
+   docker exec -it ollama ollama pull nomic-embed-text
+   ```
 
 4. **Ingest Documents:**
-Run the ingestion script to populate ChromaDB.
-```bash
-python ingest.py --path /documents
+   Run the ingestion script to populate ChromaDB.
+   ```bash
+   python ingest.py --path /documents
 
-```
+   ```
 
 
 
