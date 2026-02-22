@@ -11,8 +11,8 @@ version: "3.8"
 #      Docker will pull all images and build the custom services directly from
 #      the GitHub repo automatically.
 #   4. Pull models once containers are up:
-#      docker exec ollama ollama pull llama3
-#      docker exec ollama ollama pull nomic-embed-text
+#      docker exec ollama ollama pull qwen3:4b-q4_K_M
+#      docker exec ollama ollama pull qwen3-embedding:0.6b
 #
 # ⚠ IF OLLAMA IS ALREADY RUNNING IN A SEPARATE COMPOSE:
 #   Remove the entire `ollama` service block below and change every
@@ -115,10 +115,11 @@ services:
       - OLLAMA_BASE_URL=http://ollama:11434
       - CHROMADB_HOST=chromadb
       - CHROMADB_PORT=8000
-      - GENERATION_MODEL=${GENERATION_MODEL:-llama3}
-      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-nomic-embed-text}
+      - GENERATION_MODEL=${GENERATION_MODEL:-qwen3:4b-q4_K_M}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-qwen3-embedding:0.6b}
       - CHROMA_COLLECTION=${CHROMA_COLLECTION:-handbooks}
       - HyDE_NUM_RESULTS=${HYDE_NUM_RESULTS:-5}
+      - INCLUDE_CHAPTER_SUMMARIES=${INCLUDE_CHAPTER_SUMMARIES:-true}
     depends_on:
       - ollama
       - chromadb
@@ -139,7 +140,7 @@ services:
     environment:
       - ORCHESTRATION_URL=http://orchestration:8000
       - OLLAMA_BASE_URL=http://ollama:11434
-      - GENERATION_MODEL=${GENERATION_MODEL:-llama3}
+      - GENERATION_MODEL=${GENERATION_MODEL:-qwen3:4b-q4_K_M}
     depends_on:
       - orchestration
       - ollama

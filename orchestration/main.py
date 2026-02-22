@@ -3,6 +3,8 @@ main.py — Orchestration API for the HyDE-RAG pipeline.
 
 Exposes:
   GET  /health                       — liveness probe
+  GET  /settings                     — read runtime feature flags
+  PUT  /settings                     — update runtime feature flags (no restart needed)
   GET  /v1/models                    — OpenAI-compatible model list
   POST /v1/chat/completions          — OpenAI-compatible chat endpoint (streams)
   POST /ingest                       — Receive file + metadata from Ingestion UI
@@ -21,7 +23,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from chunker import chunk_document
-from hyde_pipeline import hyde_query, store_chunks
+from hyde_pipeline import hyde_query, store_chunks, store_chapter_summaries
+import hyde_pipeline
 
 # ── App ───────────────────────────────────────────────────────────────────────
 app = FastAPI(
@@ -38,6 +41,36 @@ GENERATION_MODEL: str = os.getenv("GENERATION_MODEL", "llama3")
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+# ── Runtime settings ──────────────────────────────────────────────────────────
+
+class Settings(BaseModel):
+    include_chapter_summaries: bool
+
+
+@app.get("/settings")
+async def get_settings():
+    """Return the current runtime feature flags."""
+    return Settings(
+        include_chapter_summaries=hyde_pipeline.include_chapter_summaries,
+    )
+
+
+@app.put("/settings")
+async def update_settings(settings: Settings):
+    """
+    Update runtime feature flags without restarting the container.
+
+    ``include_chapter_summaries`` — when True, the chapter summary for each
+    matched chunk's parent chapter is prepended to the retrieval context,
+    giving the LLM broader narrative context before the specific passages.
+    Set to False to reduce token usage if the extra context bloats responses.
+    """
+    hyde_pipeline.include_chapter_summaries = settings.include_chapter_summaries
+    return Settings(
+        include_chapter_summaries=hyde_pipeline.include_chapter_summaries,
+    )
 
 
 # ── OpenAI-compatible model list ──────────────────────────────────────────────
@@ -155,7 +188,9 @@ async def ingest(
         raise HTTPException(status_code=422, detail="metadata must be valid JSON.")
 
     raw = await file.read()
-    chunks = chunk_document(file.filename, raw, base_metadata)
+
+    # chunk_document now returns (chunks, chapters)
+    chunks, chapters = chunk_document(file.filename, raw, base_metadata)
 
     if not chunks:
         raise HTTPException(
@@ -164,9 +199,18 @@ async def ingest(
 
     await store_chunks(chunks)
 
+    # Generate and store per-chapter summaries (used for wider context at query time)
+    summaries_stored = 0
+    if chapters:
+        # Inject filename into base_metadata so summary IDs are stable
+        summary_meta = {**base_metadata, "filename": file.filename}
+        summaries_stored = await store_chapter_summaries(chapters, summary_meta)
+
     return {
         "status": "ok",
         "filename": file.filename,
         "chunks_stored": len(chunks),
+        "chapters_found": len(chapters),
+        "summaries_stored": summaries_stored,
         "metadata": base_metadata,
     }
