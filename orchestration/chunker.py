@@ -9,7 +9,7 @@ Each chunk is returned as a dict:
         "chunk_index":   int,   # 0-based position within the document
         "chapter_num":   int,   # 1-based chapter number (1 = whole-doc if no chapters found)
         "chapter_title": str,   # heading text for this chapter
-        "paragraph_num": int,   # 1-based chunk position within the chapter
+        "paragraph_num": int,   # 1-based chunk position within the chapter (resets per chapter)
         "metadata":      dict,  # merged with caller-supplied metadata
     }
 
@@ -181,9 +181,9 @@ def chunk_document(
                    optional summary generation by the caller.
 
     Each chunk's metadata includes:
-        chapter       — heading text for its parent chapter
+        chapter       — "<num>: <title>" (e.g. "3: Introduction") or just "<num>" when no title
         chapter_num   — 1-based chapter index
-        paragraph     — 1-based chunk position within the chapter
+        paragraph     — 1-based chunk position within the chapter (resets to 1 for each chapter)
         chunk_index   — 0-based global position across the whole document
         total_chunks  — total chunks in the document
         filename      — original filename
@@ -208,6 +208,11 @@ def chunk_document(
         chapter_title = chapter["title"]
         splits = _SPLITTER.split_text(chapter["text"])
 
+        # Build the chapter label: "1: Title" when a title exists, otherwise just the number.
+        chapter_label = (
+            f"{chapter_num}: {chapter_title}" if chapter_title else str(chapter_num)
+        )
+
         for para_num, text in enumerate(splits, start=1):
             chunks.append(
                 {
@@ -219,9 +224,9 @@ def chunk_document(
                     "metadata": {
                         **base_metadata,
                         # Per-chunk positional fields (override doc-level values)
-                        "chapter": chapter_title,
+                        "chapter": chapter_label,   # e.g. "3: Introduction" or "3"
                         "chapter_num": chapter_num,
-                        "paragraph": para_num,
+                        "paragraph": para_num,      # 1-based position within the chapter
                         # Housekeeping
                         "chunk_index": global_idx,
                         "filename": filename,

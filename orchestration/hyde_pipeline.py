@@ -149,6 +149,7 @@ async def _generate_chapter_summary(
 async def store_chapter_summaries(
     chapters: list[dict],
     base_metadata: dict,
+    progress_cb=None,
 ) -> int:
     """
     Generate and persist a summary for each chapter in *chapters*.
@@ -156,14 +157,18 @@ async def store_chapter_summaries(
     ``chapters`` is the list returned by ``chunker.detect_chapters()``:
         [{"chapter_num": int, "title": str, "text": str}, ...]
 
+    *progress_cb*, if provided, is called after each chapter summary is stored:
+        await progress_cb(completed: int, total: int)
+
     Returns the number of summaries stored.
     """
     collection = _get_summaries_collection()
     source_name: str = base_metadata.get("source_name") or base_metadata.get("filename", "Unknown")
     filename: str = base_metadata.get("filename", "")
     stored = 0
+    total = len(chapters)
 
-    for chapter in chapters:
+    for i, chapter in enumerate(chapters, start=1):
         chapter_num: int = chapter["chapter_num"]
         chapter_title: str = chapter["title"]
 
@@ -190,6 +195,8 @@ async def store_chapter_summaries(
             ],
         )
         stored += 1
+        if progress_cb:
+            await progress_cb(i, total)
 
     return stored
 
@@ -244,10 +251,16 @@ def _fetch_chapter_summaries(retrieved: list[dict]) -> list[dict]:
 
 # ── HyDE pipeline ─────────────────────────────────────────────────────────────
 
-async def store_chunks(chunks: list[dict]) -> None:
-    """Embed and store pre-chunked documents in ChromaDB."""
+async def store_chunks(chunks: list[dict], progress_cb=None) -> None:
+    """
+    Embed and store pre-chunked documents in ChromaDB.
+
+    *progress_cb*, if provided, is called after each chunk is stored:
+        await progress_cb(completed: int, total: int)
+    """
     collection = _get_collection()
-    for chunk in chunks:
+    total = len(chunks)
+    for i, chunk in enumerate(chunks, start=1):
         embedding = await _ollama_embed(chunk["text"])
         collection.add(
             ids=[f"{chunk['metadata']['filename']}_chunk_{chunk['chunk_index']}"],
@@ -255,6 +268,8 @@ async def store_chunks(chunks: list[dict]) -> None:
             documents=[chunk["text"]],
             metadatas=[chunk["metadata"]],
         )
+        if progress_cb:
+            await progress_cb(i, total)
 
 
 def _format_citation(meta: dict) -> str:

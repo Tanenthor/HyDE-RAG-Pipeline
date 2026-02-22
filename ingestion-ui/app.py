@@ -15,6 +15,7 @@ Flow:
 import io
 import json
 import os
+import time
 
 import requests
 import streamlit as st
@@ -121,8 +122,11 @@ def _to_str(val) -> str:
     return str(val)
 
 
-def submit_to_orchestration(uploaded_file, metadata: dict) -> dict:
-    """POST the file and verified metadata to the Orchestration API /ingest endpoint."""
+def start_ingest_job(uploaded_file, metadata: dict) -> str:
+    """
+    POST the file and verified metadata to /ingest.
+    Returns immediately with the server-assigned job_id.
+    """
     uploaded_file.seek(0)
     files = {
         "file": (uploaded_file.name, uploaded_file, "application/octet-stream"),
@@ -132,7 +136,17 @@ def submit_to_orchestration(uploaded_file, metadata: dict) -> dict:
         f"{ORCHESTRATION_URL}/ingest",
         files=files,
         data=data,
-        timeout=600,
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json()["job_id"]
+
+
+def poll_ingest_status(job_id: str) -> dict:
+    """Fetch the current status of a background ingest job."""
+    resp = requests.get(
+        f"{ORCHESTRATION_URL}/ingest/status/{job_id}",
+        timeout=10,
     )
     resp.raise_for_status()
     return resp.json()
@@ -282,28 +296,57 @@ if uploaded:
                 "chapter": st.session_state["meta_chapter"].strip() or None,
                 "paragraph": st.session_state["meta_paragraph"].strip() or None,
             }
+            try:
+                job_id = start_ingest_job(uploaded, verified_metadata)
+                st.session_state["_job_id"] = job_id
+                st.session_state["_ingesting"] = True
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Failed to start ingestion: {exc}")
 
-            # ── Step 4: Submit ────────────────────────────────────────────────
-            with st.spinner(
-                "Chunking, generating chapter summaries, embedding, and storing "
-                "in ChromaDB… this may take a moment."
-            ):
-                try:
-                    result = submit_to_orchestration(uploaded, verified_metadata)
-                    chapters_found = result.get("chapters_found", 0)
-                    summaries_stored = result.get("summaries_stored", 0)
-                    st.success(
-                        f"✅ Ingestion complete! "
-                        f"**{result.get('chunks_stored', '?')}** chunks stored "
-                        f"across **{chapters_found}** chapter(s) "
-                        f"({summaries_stored} chapter summaries generated) "
-                        f"from *{verified_metadata['source_name']}*."
-                    )
-                    st.json(result)
-                except requests.HTTPError as exc:
-                    st.error(f"Ingestion failed: {exc.response.text}")
-                except Exception as exc:
-                    st.error(f"Ingestion failed: {exc}")
+    # ── Step 4: Live progress bar ────────────────────────────────────────────────
+    if st.session_state.get("_ingesting") and st.session_state.get("_job_id"):
+        st.subheader("Step 4 — Ingestion Progress")
+        st.info(
+            "⏳ Ingestion is running on the server — it is safe to close this "
+            "window. The job will continue and you can reopen the portal later."
+        )
+
+        job_id = st.session_state["_job_id"]
+        try:
+            job = poll_ingest_status(job_id)
+        except Exception as exc:
+            st.error(f"Could not fetch job status: {exc}")
+            st.session_state["_ingesting"] = False
+        else:
+            progress = job.get("progress", 0)
+            total = job.get("total") or 1
+            pct = min(progress / total, 1.0)
+            message = job.get("message", "Processing…")
+
+            st.progress(pct, text=f"{message}  ({int(pct * 100)}%)")
+
+            if job["status"] == "done":
+                st.session_state["_ingesting"] = False
+                result = job.get("result") or {}
+                meta = result.get("metadata") or {}
+                st.success(
+                    f"✅ Ingestion complete! "
+                    f"**{result.get('chunks_stored', '?')}** chunks stored "
+                    f"across **{result.get('chapters_found', 0)}** chapter(s) "
+                    f"({result.get('summaries_stored', 0)} chapter summaries generated) "
+                    f"from *{meta.get('source_name', '?')}*."
+                )
+                st.json(result)
+
+            elif job["status"] == "error":
+                st.session_state["_ingesting"] = False
+                st.error(f"Ingestion failed: {job.get('error', 'Unknown error')}")
+
+            else:
+                # Still running — pause briefly then rerun to refresh the bar
+                time.sleep(1.5)
+                st.rerun()
 
 # ── Sidebar: service status + admin settings ──────────────────────────────────
 with st.sidebar:

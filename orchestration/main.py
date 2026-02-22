@@ -7,11 +7,13 @@ Exposes:
   PUT  /settings                     — update runtime feature flags (no restart needed)
   GET  /v1/models                    — OpenAI-compatible model list
   POST /v1/chat/completions          — OpenAI-compatible chat endpoint (streams)
-  POST /ingest                       — Receive file + metadata from Ingestion UI
+  POST /ingest                       — Receive file + metadata; returns job_id immediately
+  GET  /ingest/status/{job_id}       — Poll progress of a background ingest job
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
@@ -34,6 +36,75 @@ app = FastAPI(
 )
 
 GENERATION_MODEL: str = os.getenv("GENERATION_MODEL", "llama3")
+
+
+# ── In-memory job registry ────────────────────────────────────────────────────
+# Each entry is created when /ingest is called and updated by the background task.
+# Structure: {job_id: {status, progress, total, message, result, error, created_at}}
+_jobs: dict[str, dict] = {}
+
+
+async def _run_ingest_job(
+    job_id: str,
+    filename: str,
+    raw: bytes,
+    base_metadata: dict,
+) -> None:
+    """Background task that chunks, embeds, and stores a document."""
+
+    def _update(progress: int, total: int, message: str) -> None:
+        _jobs[job_id].update(progress=progress, total=total, message=message)
+
+    try:
+        chunks, chapters = chunk_document(filename, raw, base_metadata)
+
+        if not chunks:
+            _jobs[job_id].update(
+                status="error", error="No text could be extracted from the file."
+            )
+            return
+
+        # Total steps = one per chunk embed + one per chapter summary
+        total_steps = len(chunks) + (len(chapters) if chapters else 0)
+        _update(0, total_steps, f"Starting — {len(chunks)} chunks to embed…")
+
+        async def on_chunk(done: int, _total: int) -> None:
+            _update(done, total_steps, f"Embedding chunk {done} / {len(chunks)}…")
+
+        await store_chunks(chunks, progress_cb=on_chunk)
+
+        summaries_stored = 0
+        if chapters:
+            summary_meta = {**base_metadata, "filename": filename}
+            chunks_done = len(chunks)
+
+            async def on_summary(done: int, _total: int) -> None:
+                _update(
+                    chunks_done + done,
+                    total_steps,
+                    f"Summarising chapter {done} / {len(chapters)}…",
+                )
+
+            summaries_stored = await store_chapter_summaries(
+                chapters, summary_meta, progress_cb=on_summary
+            )
+
+        _jobs[job_id].update(
+            status="done",
+            progress=total_steps,
+            total=total_steps,
+            message="Complete",
+            result={
+                "filename": filename,
+                "chunks_stored": len(chunks),
+                "chapters_found": len(chapters),
+                "summaries_stored": summaries_stored,
+                "metadata": base_metadata,
+            },
+        )
+
+    except Exception as exc:  # noqa: BLE001
+        _jobs[job_id].update(status="error", error=str(exc))
 
 
 # ── Health ────────────────────────────────────────────────────────────────────
@@ -179,8 +250,12 @@ async def ingest(
     metadata: str = Form(...),
 ):
     """
-    Receive an uploaded file and its verified metadata JSON string,
-    chunk and embed the content, and store everything in ChromaDB.
+    Receive an uploaded file and its verified metadata JSON string, then
+    immediately launch a background job to chunk, embed, and store the
+    content in ChromaDB.
+
+    Returns ``{job_id, status}`` straight away — the client should poll
+    ``GET /ingest/status/{job_id}`` for progress updates.
     """
     try:
         base_metadata: dict = json.loads(metadata)
@@ -188,29 +263,40 @@ async def ingest(
         raise HTTPException(status_code=422, detail="metadata must be valid JSON.")
 
     raw = await file.read()
+    filename = file.filename
 
-    # chunk_document now returns (chunks, chapters)
-    chunks, chapters = chunk_document(file.filename, raw, base_metadata)
-
-    if not chunks:
-        raise HTTPException(
-            status_code=422, detail="No text could be extracted from the file."
-        )
-
-    await store_chunks(chunks)
-
-    # Generate and store per-chapter summaries (used for wider context at query time)
-    summaries_stored = 0
-    if chapters:
-        # Inject filename into base_metadata so summary IDs are stable
-        summary_meta = {**base_metadata, "filename": file.filename}
-        summaries_stored = await store_chapter_summaries(chapters, summary_meta)
-
-    return {
-        "status": "ok",
-        "filename": file.filename,
-        "chunks_stored": len(chunks),
-        "chapters_found": len(chapters),
-        "summaries_stored": summaries_stored,
-        "metadata": base_metadata,
+    job_id = uuid.uuid4().hex
+    _jobs[job_id] = {
+        "status": "running",
+        "progress": 0,
+        "total": 0,
+        "message": "Starting…",
+        "result": None,
+        "error": None,
+        "created_at": time.time(),
     }
+
+    # create_task detaches the coroutine from the request lifecycle so a
+    # browser close / connection drop will NOT cancel the ingestion.
+    asyncio.create_task(_run_ingest_job(job_id, filename, raw, base_metadata))
+
+    return {"job_id": job_id, "status": "running"}
+
+
+@app.get("/ingest/status/{job_id}")
+async def ingest_status(job_id: str):
+    """
+    Poll the status of a background ingest job.
+
+    Returns:
+        status   — "running" | "done" | "error"
+        progress — number of steps completed
+        total    — total steps (0 until chunking finishes)
+        message  — human-readable progress description
+        result   — final result dict (only when status == "done")
+        error    — error string (only when status == "error")
+    """
+    job = _jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    return job

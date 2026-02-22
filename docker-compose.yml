@@ -87,7 +87,7 @@ services:
   # 3. ChromaDB – vector store
   # ─────────────────────────────────────────────────────────
   chromadb:
-    image: chromadb/chroma:latest
+    image: chromadb/chroma:0.5.23
     container_name: chromadb
     restart: unless-stopped
     ports:
