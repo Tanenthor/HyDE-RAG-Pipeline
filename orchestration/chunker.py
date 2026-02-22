@@ -36,11 +36,18 @@ def _extract_docx(raw: bytes) -> str:
 
 
 def _extract_epub(raw: bytes) -> str:
+    import tempfile
+    import warnings
     import ebooklib
     from ebooklib import epub
     from bs4 import BeautifulSoup
 
-    book = epub.read_epub(io.BytesIO(raw))
+    with tempfile.NamedTemporaryFile(suffix=".epub", delete=False) as tmp:
+        tmp.write(raw)
+        tmp_path = tmp.name
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        book = epub.read_epub(tmp_path, options={"ignore_ncx": True})
     chapters = []
     for item in book.get_items_of_type(ebooklib.ITEM_DOCUMENT):
         soup = BeautifulSoup(item.get_content(), "html.parser")

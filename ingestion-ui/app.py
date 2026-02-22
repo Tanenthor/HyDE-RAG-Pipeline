@@ -48,11 +48,18 @@ def extract_text_preview(uploaded_file, max_chars: int = 3000) -> str:
         return text[:max_chars]
 
     if name.endswith(".epub"):
+        import tempfile
+        import warnings
         import ebooklib
         from ebooklib import epub
         from bs4 import BeautifulSoup
 
-        book = epub.read_epub(io.BytesIO(raw))
+        with tempfile.NamedTemporaryFile(suffix=".epub", delete=False) as tmp:
+            tmp.write(raw)
+            tmp_path = tmp.name
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            book = epub.read_epub(tmp_path, options={"ignore_ncx": True})
         parts = []
         for item in book.get_items_of_type(ebooklib.ITEM_DOCUMENT):
             soup = BeautifulSoup(item.get_content(), "html.parser")
