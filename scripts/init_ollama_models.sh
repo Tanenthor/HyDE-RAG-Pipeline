@@ -10,8 +10,8 @@
 
 set -euo pipefail
 
-GENERATION_MODEL="${GENERATION_MODEL:-llama3}"
-EMBEDDING_MODEL="${EMBEDDING_MODEL:-nomic-embed-text}"
+GENERATION_MODEL="${GENERATION_MODEL:-qwen3:4b-q4_K_M}"
+EMBEDDING_MODEL="${EMBEDDING_MODEL:-qwen3-embedding:0.6b}"
 CONTAINER="${OLLAMA_CONTAINER:-ollama}"
 
 echo "==> Waiting for Ollama container to be ready…"
