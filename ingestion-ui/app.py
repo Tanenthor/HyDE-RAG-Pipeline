@@ -47,6 +47,20 @@ def extract_text_preview(uploaded_file, max_chars: int = 3000) -> str:
         text = "\n".join(p.text for p in doc.paragraphs)
         return text[:max_chars]
 
+    if name.endswith(".epub"):
+        import ebooklib
+        from ebooklib import epub
+        from bs4 import BeautifulSoup
+
+        book = epub.read_epub(io.BytesIO(raw))
+        parts = []
+        for item in book.get_items_of_type(ebooklib.ITEM_DOCUMENT):
+            soup = BeautifulSoup(item.get_content(), "html.parser")
+            parts.append(soup.get_text(separator="\n"))
+            if sum(len(p) for p in parts) >= max_chars:
+                break
+        return "\n\n".join(parts)[:max_chars]
+
     # TXT / Markdown / fallback
     return raw.decode("utf-8", errors="replace")[:max_chars]
 
@@ -123,7 +137,7 @@ st.caption(
 st.subheader("Step 1 — Upload Document")
 uploaded = st.file_uploader(
     label="Drag and drop a file here, or click to browse",
-    type=["pdf", "docx", "txt", "md"],
+    type=["pdf", "docx", "txt", "md", "epub"],
     accept_multiple_files=False,
 )
 

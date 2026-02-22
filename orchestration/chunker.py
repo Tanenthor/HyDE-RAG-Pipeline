@@ -35,6 +35,21 @@ def _extract_docx(raw: bytes) -> str:
     return "\n\n".join(p.text for p in doc.paragraphs if p.text.strip())
 
 
+def _extract_epub(raw: bytes) -> str:
+    import ebooklib
+    from ebooklib import epub
+    from bs4 import BeautifulSoup
+
+    book = epub.read_epub(io.BytesIO(raw))
+    chapters = []
+    for item in book.get_items_of_type(ebooklib.ITEM_DOCUMENT):
+        soup = BeautifulSoup(item.get_content(), "html.parser")
+        text = soup.get_text(separator="\n").strip()
+        if text:
+            chapters.append(text)
+    return "\n\n".join(chapters)
+
+
 def extract_text(filename: str, raw: bytes) -> str:
     """Dispatch to the correct parser based on file extension."""
     name = filename.lower()
@@ -42,6 +57,8 @@ def extract_text(filename: str, raw: bytes) -> str:
         return _extract_pdf(raw)
     if name.endswith(".docx"):
         return _extract_docx(raw)
+    if name.endswith(".epub"):
+        return _extract_epub(raw)
     # TXT / Markdown / unknown — decode as UTF-8
     return raw.decode("utf-8", errors="replace")
 

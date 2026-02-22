@@ -91,7 +91,7 @@ services:
     container_name: chromadb
     restart: unless-stopped
     ports:
-      - "${CHROMADB_PORT:-8080}:8000"
+      - "${CHROMADB_PORT:-8088}:8000"
     volumes:
       - chromadb_data:/chroma/chroma
     environment:
@@ -110,7 +110,7 @@ services:
     container_name: orchestration
     restart: unless-stopped
     ports:
-      - "${ORCHESTRATION_PORT:-8000}:8000"
+      - "${ORCHESTRATION_PORT:-8089}:8000"
     environment:
       - OLLAMA_BASE_URL=http://ollama:11434
       - CHROMADB_HOST=chromadb
