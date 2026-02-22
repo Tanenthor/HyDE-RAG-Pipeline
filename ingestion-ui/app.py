@@ -112,6 +112,15 @@ def infer_metadata_via_ollama(text_preview: str) -> dict:
         }
 
 
+def _to_str(val) -> str:
+    """Safely convert any Ollama-returned value to a plain string for text widgets."""
+    if val is None:
+        return ""
+    if isinstance(val, list):
+        return ", ".join(str(v) for v in val)
+    return str(val)
+
+
 def submit_to_orchestration(uploaded_file, metadata: dict) -> dict:
     """POST the file and verified metadata to the Orchestration API /ingest endpoint."""
     uploaded_file.seek(0)
@@ -203,11 +212,11 @@ if uploaded:
         st.session_state["_preview"] = preview
         st.session_state["_inferred"] = inferred
         # Seed form fields from inference result (only first time)
-        st.session_state.setdefault("meta_source_name", inferred.get("source_name") or "")
-        st.session_state.setdefault("meta_authors", inferred.get("authors") or "")
-        st.session_state.setdefault("meta_publish_date", inferred.get("publish_date") or "")
-        st.session_state.setdefault("meta_chapter", str(inferred.get("chapter") or ""))
-        st.session_state.setdefault("meta_paragraph", str(inferred.get("paragraph") or ""))
+        st.session_state.setdefault("meta_source_name", _to_str(inferred.get("source_name")))
+        st.session_state.setdefault("meta_authors",      _to_str(inferred.get("authors")))
+        st.session_state.setdefault("meta_publish_date", _to_str(inferred.get("publish_date")))
+        st.session_state.setdefault("meta_chapter",      _to_str(inferred.get("chapter")))
+        st.session_state.setdefault("meta_paragraph",    _to_str(inferred.get("paragraph")))
 
     preview: str = st.session_state["_preview"]
 
