@@ -300,3 +300,182 @@ async def ingest_status(job_id: str):
     if not job:
         raise HTTPException(status_code=404, detail="Job not found.")
     return job
+
+
+# ── Document Library endpoints ────────────────────────────────────────────────
+
+@app.get("/documents")
+async def list_documents():
+    """
+    Return a summary of every document stored in ChromaDB, grouped by filename.
+
+    Each entry includes:
+        filename, source_name, authors, publish_date,
+        num_chunks, num_chapters, num_summaries,
+        chapters  — list of {chapter_num, title, has_summary, summary}
+    """
+    try:
+        collection = hyde_pipeline._get_collection()
+        summaries_col = hyde_pipeline._get_summaries_collection()
+
+        # Fetch all chunk metadatas (no embeddings/documents needed)
+        result = collection.get(include=["metadatas"], limit=100_000)
+
+        if not result["ids"]:
+            return []
+
+        # Group chunks by filename
+        docs: dict[str, dict] = {}
+        for chunk_id, meta in zip(result["ids"], result["metadatas"]):
+            filename = meta.get("filename") or "unknown"
+            if filename not in docs:
+                docs[filename] = {
+                    "filename": filename,
+                    "source_name": meta.get("source_name", ""),
+                    "authors": meta.get("authors", ""),
+                    "publish_date": meta.get("publish_date", ""),
+                    "num_chunks": 0,
+                    "chapters_seen": set(),
+                }
+            docs[filename]["num_chunks"] += 1
+            cn = meta.get("chapter_num")
+            if cn is not None:
+                docs[filename]["chapters_seen"].add(int(cn))
+
+        output = []
+        for filename, doc in docs.items():
+            # Fetch chapter summaries for this document
+            chapter_summaries: list[dict] = []
+            try:
+                sr = summaries_col.get(
+                    where={"filename": {"$eq": filename}},
+                    include=["documents", "metadatas"],
+                    limit=1_000,
+                )
+                for sdoc, smeta in zip(sr["documents"], sr["metadatas"]):
+                    chapter_summaries.append({
+                        "chapter_num": int(smeta.get("chapter_num", 0)),
+                        "title": smeta.get("chapter", ""),
+                        "summary": sdoc,
+                        "has_summary": True,
+                    })
+                chapter_summaries.sort(key=lambda x: x["chapter_num"])
+            except Exception:
+                chapter_summaries = []
+
+            output.append({
+                "filename": filename,
+                "source_name": doc["source_name"],
+                "authors": doc["authors"],
+                "publish_date": doc["publish_date"],
+                "num_chunks": doc["num_chunks"],
+                "num_chapters": len(doc["chapters_seen"]),
+                "num_summaries": len(chapter_summaries),
+                "chapters": chapter_summaries,
+            })
+
+        # Sort alphabetically by source_name for a consistent listing
+        output.sort(key=lambda d: (d["source_name"] or d["filename"]).lower())
+        return output
+
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+class MetadataUpdate(BaseModel):
+    source_name: str | None = None
+    authors: str | None = None
+    publish_date: str | None = None
+
+
+@app.patch("/documents/{filename:path}")
+async def update_document_metadata(filename: str, update: MetadataUpdate):
+    """
+    Update editable metadata fields (source_name, authors, publish_date) for
+    every chunk and summary of the named document.  Only non-null fields are
+    applied; omit a field to leave it unchanged.
+    """
+    try:
+        patch = {k: v for k, v in update.model_dump().items() if v is not None}
+        if not patch:
+            raise HTTPException(status_code=422, detail="No fields to update.")
+
+        collection = hyde_pipeline._get_collection()
+        summaries_col = hyde_pipeline._get_summaries_collection()
+
+        # ── Update main chunks ────────────────────────────────────────────────
+        result = collection.get(
+            where={"filename": {"$eq": filename}},
+            include=["metadatas"],
+            limit=100_000,
+        )
+        if not result["ids"]:
+            raise HTTPException(status_code=404, detail=f"No chunks found for '{filename}'.")
+
+        updated_metas = [{**m, **patch} for m in result["metadatas"]]
+        collection.update(ids=result["ids"], metadatas=updated_metas)
+
+        # ── Update summaries ──────────────────────────────────────────────────
+        sr = summaries_col.get(
+            where={"filename": {"$eq": filename}},
+            include=["metadatas"],
+            limit=1_000,
+        )
+        summaries_updated = 0
+        if sr["ids"]:
+            updated_sum_metas = [{**m, **patch} for m in sr["metadatas"]]
+            summaries_col.update(ids=sr["ids"], metadatas=updated_sum_metas)
+            summaries_updated = len(sr["ids"])
+
+        return {
+            "filename": filename,
+            "chunks_updated": len(result["ids"]),
+            "summaries_updated": summaries_updated,
+            "applied": patch,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.delete("/documents/{filename:path}")
+async def delete_document(filename: str):
+    """
+    Delete all chunks and chapter summaries for the named document from ChromaDB.
+    """
+    try:
+        collection = hyde_pipeline._get_collection()
+        summaries_col = hyde_pipeline._get_summaries_collection()
+
+        result = collection.get(
+            where={"filename": {"$eq": filename}},
+            include=[],
+            limit=100_000,
+        )
+        chunks_deleted = 0
+        if result["ids"]:
+            collection.delete(ids=result["ids"])
+            chunks_deleted = len(result["ids"])
+
+        sr = summaries_col.get(
+            where={"filename": {"$eq": filename}},
+            include=[],
+            limit=1_000,
+        )
+        summaries_deleted = 0
+        if sr["ids"]:
+            summaries_col.delete(ids=sr["ids"])
+            summaries_deleted = len(sr["ids"])
+
+        return {
+            "filename": filename,
+            "chunks_deleted": chunks_deleted,
+            "summaries_deleted": summaries_deleted,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
